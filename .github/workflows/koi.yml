@@ -1,14 +1,13 @@
-# Copy into your profile repository as .github/workflows/koi.yml, then embed
-# <img src="koi/koi.gif" width="256" alt="My koi"> in its README.md.
+
 name: Koi
 
 on:
   schedule:
-    # Just after midnight UTC, so the koi shows the day that just ended.
     - cron: "20 0 * * *"
   workflow_dispatch:
   push:
-    paths: [.github/workflows/koi.yml]
+    paths:
+      - .github/workflows/koi.yml
 
 permissions:
   contents: write
@@ -18,21 +17,86 @@ concurrency: koi
 jobs:
   koi:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v7
+
+      # Generate the koi
       - uses: yalongwastaken/git-koi@v1
         with:
           body: white
           output-dir: koi
+
+      # Calculate total commits for the current year
+      - name: Calculate yearly commits
+        id: commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_USERNAME: YOUR_GITHUB_USERNAME
+        shell: bash
+        run: |
+          YEAR=$(date -u +%Y)
+          NEXT_YEAR=$((YEAR + 1))
+
+          FROM="${YEAR}-01-01T00:00:00Z"
+          TO="${NEXT_YEAR}-01-01T00:00:00Z"
+
+          COUNT=$(gh api graphql \
+            -f query='query($login:String!, $from:DateTime!, $to:DateTime!) {
+              user(login:$login) {
+                contributionsCollection(from:$from,to:$to) {
+                  totalCommitContributions
+                }
+              }
+            }' \
+            -f login="$GITHUB_USERNAME" \
+            -f from="$FROM" \
+            -f to="$TO" \
+            --jq '.data.user.contributionsCollection.totalCommitContributions')
+
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Total yearly commits: $COUNT"
+
+      # Increase fish size according to yearly commits
+      - name: Resize koi
+        env:
+          COMMITS: ${{ steps.commits.outputs.count }}
+        shell: bash
+        run: |
+          if [ "$COMMITS" -le 50 ]; then
+            SIZE=100
+          elif [ "$COMMITS" -le 150 ]; then
+            SIZE=150
+          elif [ "$COMMITS" -le 300 ]; then
+            SIZE=200
+          elif [ "$COMMITS" -le 500 ]; then
+            SIZE=256
+          else
+            SIZE=320
+          fi
+
+          echo "Commits: $COMMITS"
+          echo "Koi size: ${SIZE}px"
+
+          magick koi/koi.gif \
+            -coalesce \
+            -resize "${SIZE}x${SIZE}" \
+            -layers Optimize \
+            koi/koi.gif
+
+      # Commit updated koi
       - name: Commit the koi if it changed
         shell: bash
         run: |
           git add koi/koi.gif
+
           if git diff --cached --quiet; then
-            echo "The koi is unchanged; nothing to commit."
+            echo "The koi is unchanged."
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --quiet --message "koi: draw the day's koi"
+
+          git commit --quiet --message "koi: update yearly growth"
           git push --quiet
